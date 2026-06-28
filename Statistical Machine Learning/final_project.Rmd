@@ -1,0 +1,158 @@
+---
+title: "Predictive Modeling of Forest Biomass for Carbon Management"
+author: [Carene Kouassi]
+date: "Due 4pm Friday, May 15, 2026 on Moodle"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+
+# Load necessary libraries
+```{r}
+library(tidyverse)
+library(glmnet)      
+library(rpart)       
+library(rpart.plot)  
+library(randomForest)
+library(caret)       
+library(e1071)  
+```
+
+
+# 1. DATA PREPARATION
+
+```{r}
+# Load data (replace with your actual file path)
+data <- read_csv("ProjectData_SP2026.csv")
+
+# We convert it to a factor for classification
+data$CARBON_bin <- factor(ifelse(data$CARBON > 0, "Presence", "Absence"), 
+                          levels = c("Absence", "Presence"))
+
+# Remove all other survey variables 
+survey_vars <- c("BA", "VOL.CF", "VOL.BF", "COUNT", "DRYBIO", "CARBON")
+model_data <- data %>% select(-one_of(survey_vars))
+
+# Split into Training and Testing based on the 'train' column
+train_df <- model_data %>% filter(train == 1) %>% select(-train)
+test_df  <- model_data %>% filter(train == 0) %>% select(-train)
+```
+
+
+
+# 2. BASELINE MODEL 
+```{r}
+tab <- table(train_df$CARBON_bin)
+proportions <- prop.table(tab)
+
+table_df <- data.frame(
+  Class = names(tab),
+  Mean  = as.vector(proportions),
+  Count = as.vector(tab)
+)
+
+table_df <- table_df[order(table_df$Class, decreasing = TRUE), ]
+table_df
+```
+
+
+# 3. EXPLORATORY DATA ANALYSIS (EDA)
+
+```{r}
+summary(train_df)
+
+# Correlation Matrix
+numeric_vars <- train_df[sapply(train_df, is.numeric)]
+numeric_vars <- numeric_vars[, !names(numeric_vars) %in% c("SECTION", "CARBON_bin")]
+cor_matrix <- cor(numeric_vars, use = "complete.obs")
+corrplot::corrplot(cor_matrix, method = "color", tl.cex = 0.6)
+
+
+# Boxplot
+boxplot(ndvi ~ CARBON_bin, data = train_df)
+boxplot(evi ~ CARBON_bin, data = train_df)
+boxplot(tcc16 ~ CARBON_bin, data = train_df)
+```
+
+
+# 4. METHOD 1: LASSO (Regularized Logistic Regression)
+```{r}
+# Prepare matrix for glmnet (requires matrix input, handles dummy coding)
+x_train <- model.matrix(CARBON_bin ~ ., train_df)[,-1]
+y_train <- train_df$CARBON_bin
+
+# Cross-validation to find optimal lambda
+lasso_cv <- cv.glmnet(x_train, y_train, family = "binomial", alpha = 1)
+plot(lasso_cv)
+
+# Predict on test data
+x_test <- model.matrix(CARBON_bin ~ ., test_df)[,-1]
+lasso_probs <- predict(lasso_cv, newx = x_test, s = "lambda.1se", type = "response")
+lasso_pred <- factor(ifelse(lasso_probs > 0.5, "Presence", "Absence"), levels = c("Absence", "Presence"))
+
+# Check coefficients
+coef(lasso_cv, s = "lambda.1se")
+```
+
+
+# 5. METHOD 2: SUPPORT VECTOR MACHINE (SVM)
+```{r}
+
+# The tune() function helps us find the best parameters (cost and gamma)
+# using cross-validation on the training set.
+set.seed(123)
+svm_tune <- tune(svm, CARBON_bin ~ ., data = train_df, 
+                 kernel = "radial",
+                 ranges = list(cost = c(0.1, 1, 10), 
+                               gamma = c(0.01, 0.1, 1)))
+
+print(svm_tune$best.parameters)
+
+# Extract the best model
+best_svm <- svm_tune$best.model
+
+# Predict on the test data
+svm_pred <- predict(best_svm, test_df)
+
+table(Predicted = svm_pred, Actual = test_df$CARBON_bin)
+```
+
+# 6. METHOD 3: RANDOM FOREST (Non-Linear Ensemble)
+
+```{r}
+# Standard Random Forest (different from a single tree)
+rf_model <- randomForest(CARBON_bin ~ ., data = train_df, ntree = 500, importance = TRUE)
+
+# Variable Importance Plot
+varImpPlot(rf_model)
+
+# Predict on test data
+rf_pred <- predict(rf_model, test_df)
+```
+
+
+
+# 7. PERFORMANCE COMPARISON
+```{r}
+# Create Confusion Matrices to get Accuracy, Sensitivity, Specificity
+lasso_results <- confusionMatrix(lasso_pred, test_df$CARBON_bin)
+svm_results  <- confusionMatrix(svm_pred, test_df$CARBON_bin)
+rf_results    <- confusionMatrix(rf_pred, test_df$CARBON_bin)
+```
+
+
+```{r}
+# Printing Final Accuracy Comparison
+cat("LASSO Test Accuracy:", lasso_results$overall['Accuracy'], "\n")
+cat("SVM Test Accuracy:", svm_results$overall['Accuracy'], "\n")
+cat("Random Forest Test Accuracy:", rf_results$overall['Accuracy'], "\n")
+```
+
+
+
+
+
+
+
